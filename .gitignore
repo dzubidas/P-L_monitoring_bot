@@ -1,0 +1,12 @@
+# Virtual environment files (you have these mixed in)
+bin/
+include/
+lib/
+lib64
+pyvenv.cfg
+
+# Environment variables
+.env
+
+# Already ignored by git
+.git/
