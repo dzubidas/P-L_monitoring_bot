@@ -198,15 +198,41 @@ class DeribitEquityMonitor:
         except Exception:
             return None
     
-    def get_equity_simple(self, currency: str = "BTC") -> Optional[dict]:
+    def get_positions(self, currency: str = "BTC", kind: str = "future") -> Optional[List[dict]]:
         """
-        Get current equity value, username, and email
+        Get current positions
+        
+        Args:
+            currency: Currency code (BTC, ETH, etc.)
+            kind: Position kind (future, option, future_combo, option_combo)
+            
+        Returns:
+            List of positions or None if error
+        """
+        try:
+            positions_data = self.make_authenticated_request("private/get_positions", {
+                "currency": currency,
+                "kind": kind
+            })
+            
+            if positions_data:
+                # Filter out positions with zero size
+                active_positions = [pos for pos in positions_data if pos.get("size", 0) != 0]
+                return active_positions
+            else:
+                return []
+        except Exception:
+            return None
+
+    def get_equity_and_positions(self, currency: str = "BTC") -> Optional[dict]:
+        """
+        Get current equity value, username, email, and positions
         
         Args:
             currency: Currency code (BTC, ETH, etc.)
             
         Returns:
-            dict: Dictionary with equity, username, and email or None if error
+            dict: Dictionary with equity, username, email, and positions or None if error
         """
         try:
             account_data = self.make_authenticated_request("private/get_account_summary", {
@@ -219,11 +245,15 @@ class DeribitEquityMonitor:
                 username = account_data.get("username", "Unknown")
                 email = account_data.get("email", "Unknown")
                 
+                # Get positions
+                positions = self.get_positions(currency)
+                
                 return {
                     "username": username,
                     "email": email,
                     "equity": equity,
-                    "currency": currency
+                    "currency": currency,
+                    "positions": positions or []
                 }
             else:
                 return None
@@ -314,7 +344,7 @@ def load_accounts_config() -> List[Dict[str, str]]:
     return accounts
 
 def get_all_accounts_equity(currency: str = "BTC") -> List[Optional[dict]]:
-    """Get equity for all configured accounts"""
+    """Get equity and positions for all configured accounts"""
     
     try:
         accounts = load_accounts_config()
@@ -329,7 +359,7 @@ def get_all_accounts_equity(currency: str = "BTC") -> List[Optional[dict]]:
             )
             
             if monitor.authenticate():
-                result = monitor.get_equity_simple(currency)
+                result = monitor.get_equity_and_positions(currency)
                 if result:
                     results.append(result)
                 else:
@@ -348,16 +378,49 @@ def get_all_accounts_equity(currency: str = "BTC") -> List[Optional[dict]]:
         return []
 
 def format_equity_message(results: List[dict]) -> str:
-    """Format equity results into Telegram message"""
+    """Format position results into Telegram message"""
     
     if not results:
-        return "No equity data available"
+        return "No position data available"
     
     message_lines = []
     
     for result in results:
-        message_lines.append(f"DB {result['email']}")
-        message_lines.append(f"Equity: {result['equity']:.8f} {result['currency']}")
+        # Telegram HTML doesn't support custom colors, so we'll use just bold
+        message_lines.append(f'<b>Deribit</b> {result["email"]}')
+        
+        # Add positions
+        positions = result.get('positions', [])
+        if positions:
+            for position in positions:
+                size_btc = position.get('size_currency', 0)
+                size_usd = position.get('size', 0)
+                direction_field = position.get('direction', '')
+                
+                # For display: show negative values for sell positions
+                if direction_field == "sell":
+                    display_btc = -abs(size_btc)
+                    display_usd = -abs(size_usd)
+                    direction = "SHORT"
+                else:
+                    display_btc = abs(size_btc)
+                    display_usd = abs(size_usd)
+                    direction = "LONG"
+                
+                instrument = position.get('instrument_name', 'Unknown')
+                liquidation_price = position.get('estimated_liquidation_price')
+                liquidation = f"{liquidation_price:.2f}" if liquidation_price else "-"
+                
+                message_lines.append(f"Position: {instrument}")
+                message_lines.append(f"                   {direction}")
+                message_lines.append(f"                   {display_btc:.9f} BTC")
+                message_lines.append(f"                   {display_usd} USD")
+                message_lines.append(f"Liquidation: {liquidation}")
+                message_lines.append("")  # Empty line after each position
+        else:
+            message_lines.append("Position: -")
+            message_lines.append("Liquidation: -")
+        
         message_lines.append("")  # Empty line between accounts
     
     # Remove the last empty line
@@ -367,7 +430,7 @@ def format_equity_message(results: List[dict]) -> str:
     return "\n".join(message_lines)
 
 def send_equity_to_telegram():
-    """Get equity data and send to Telegram"""
+    """Get position data and send to Telegram"""
     
     # Load Telegram configuration
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -380,21 +443,21 @@ def send_equity_to_telegram():
     # Initialize Telegram bot
     bot = TelegramBot(bot_token, chat_id)
     
-    # Get equity data
+    # Get position data
     results = get_all_accounts_equity("BTC")
     
     if not results:
-        bot.send_message("Failed to retrieve equity data from any accounts")
+        bot.send_message("Failed to retrieve position data from any accounts")
         return False
     
     # Format and send message
     message = format_equity_message(results)
     
-    print("Sending equity data to Telegram...")
+    print("Sending position data to Telegram...")
     success = bot.send_message(message)
     
     if success:
-        print("Successfully sent equity data to Telegram")
+        print("Successfully sent position data to Telegram")
     else:
         print("Failed to send message to Telegram")
     
